@@ -14,19 +14,6 @@ table OperatorMessage {
   t_ms: uint;
 }
 
-/// A raw input event from a device the server has opened (evdev shape).
-/// What a code means belongs to the client or a device-specific schema.
-table InputEvent {
-  device: string;    // as named in the server's configuration
-  type: ushort;      // EV_KEY, EV_ABS, ...
-  code: ushort;
-  value: int;
-  /// Server monotonic clock, milliseconds, when the kernel reported the
-  /// event — not when it was forwarded. Same clock and `uint` reasoning as
-  /// `Status.t_ms`; press-to-release and event-to-frame are differences.
-  t_ms: uint;
-}
-
 /// The server is going away, or lost the machine.
 table ServerNotice {
   text: string;

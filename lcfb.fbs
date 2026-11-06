@@ -31,7 +31,7 @@ union ClientPayload {
 
 union ServerPayload {
   Welcome, Status, Ack, HalInventory, HalReadReply, HalWriteAck, HalWatchAck,
-  OperatorMessage, InputEvent, ServerNotice, PreviewResult, ToolTable, IniValue,
+  OperatorMessage, ServerNotice, PreviewResult, ToolTable, IniValue,
   DirReadValue, DirChangeAck, FileReadValue, FileUploadAck, FileDeleteAck
 }
 
