@@ -1,0 +1,39 @@
+// The two envelopes, one per direction. This is the file to generate from.
+//
+// Wire: uint32 little-endian length, then one FlatBuffer. A frame from the
+// client has root `ClientMessage` and file identifier "LCNC"; a frame from
+// the server has root `ServerMessage` and file identifier "LCNS". Both
+// directions share one stream and a receiver decodes exactly one root.
+//
+// No `root_type` is declared on purpose: both sides build one root and
+// parse the other, and flatc can carry only one root per generated tree.
+// Every table gets a `getRootAs` / `GetRoot<>` anyway, and the identifier
+// is an argument to `finish` — see `ids.ts` / `ids.h` beside this file.
+
+include "common.fbs";
+include "session.fbs";
+include "status.fbs";
+include "command.fbs";
+include "hal.fbs";
+include "event.fbs";
+include "preview.fbs";
+include "tool.fbs";
+include "ini.fbs";
+include "fs.fbs";
+
+namespace Lcfb;
+
+union ClientPayload {
+  Hello, Command, HalInventoryQuery, HalReadQuery, HalWrite, HalWatch,
+  PreviewLoad, ToolTableQuery, ToolSet, IniGet,
+  DirRead, DirChange, FileRead, FileUpload, FileDelete
+}
+
+union ServerPayload {
+  Welcome, Status, Ack, HalInventory, HalReadReply, HalWriteAck, HalWatchAck,
+  OperatorMessage, InputEvent, ServerNotice, PreviewResult, ToolTable, IniValue,
+  DirReadValue, DirChangeAck, FileReadValue, FileUploadAck, FileDeleteAck
+}
+
+table ClientMessage { payload: ClientPayload; }
+table ServerMessage { payload: ServerPayload; }

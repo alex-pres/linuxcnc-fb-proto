@@ -1,0 +1,52 @@
+// Shared enums. Numbering follows LinuxCNC where a LinuxCNC number exists,
+// so a value crossing the boundary is the value the machine reported.
+
+namespace Lcfb;
+
+/// Bumped on any incompatible change. Adding fields is compatible.
+/// (An enum because FlatBuffers has no constants.)
+enum Schema : uint { Version = 2 }
+
+enum TaskMode : byte { Unknown = 0, Manual = 1, Auto = 2, Mdi = 3 }
+
+enum TaskState : byte { Unknown = 0, Estop = 1, EstopReset = 2, Off = 3, On = 4 }
+
+enum ExecState : byte {
+  Unknown = 0, Error = 1, Done = 2,
+  WaitingForMotion = 3, WaitingForMotionQueue = 4, WaitingForIo = 5,
+  WaitingForMotionAndIo = 7, WaitingForDelay = 8, WaitingForSystemCmd = 9,
+  WaitingForSpindleOriented = 10
+}
+
+enum InterpState : byte { Unknown = 0, Idle = 1, Reading = 2, Paused = 3, Waiting = 4 }
+
+enum TrajMode : byte { Unknown = 0, Free = 1, Coord = 2, Teleop = 3 }
+
+/// What a joint is, in LinuxCNC's own numbering (EMC_LINEAR, EMC_ANGULAR).
+enum JointType : byte { Unknown = 0, Linear = 1, Angular = 2 }
+
+enum ProgramUnits : byte { Unknown = 0, Inch = 1, Mm = 2, Cm = 3 }
+
+enum SpindleDirection : byte { Reverse = -1, Stopped = 0, Forward = 1 }
+
+/// Whether a jog addresses a joint (free/joint mode) or a world axis (teleop).
+enum JogTarget : byte { Joint = 0, Axis = 1 }
+
+/// Severity of a message from the error channel.
+enum MessageKind : byte { Error = 0, Text = 1, Display = 2 }
+
+/// HAL object kinds the server can name.
+enum HalKind : byte { Pin = 0, Signal = 1, Param = 2 }
+
+/// HAL value types, HAL's own set.
+enum HalType : byte { Bit = 0, Float = 1, S32 = 2, U32 = 3, S64 = 4, U64 = 5 }
+
+enum HalDirection : byte { In = 0, Out = 1, Io = 2 }
+
+/// One HAL value. Exactly one member is meaningful, chosen by `HalType`.
+struct HalValue {
+  bit: bool;
+  float: double;
+  s: long;
+  u: ulong;
+}

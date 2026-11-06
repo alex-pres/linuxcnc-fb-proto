@@ -1,0 +1,194 @@
+include "common.fbs";
+
+namespace Lcfb;
+
+/// Per-axis readout. Positions in machine units.
+struct AxisStatus {
+  commanded: double;
+  feedback: double;
+  /// commanded minus every offset in force (what a DRO shows).
+  relative: double;
+  velocity: double;
+  homed: bool;
+  on_min_limit: bool;
+  on_max_limit: bool;
+}
+
+struct SpindleStatus {
+  enabled: bool;
+  direction: SpindleDirection;
+  /// Commanded speed as reported by motion (zero when off).
+  speed: double;
+  override: double;
+  brake: bool;
+  homed: bool;
+}
+
+// --- Sections -------------------------------------------------------
+//
+// `Status` is a preamble and ten sections. A section is a field that may be
+// absent, and absence has exactly two meanings, told apart by `known`:
+//
+//   present                     — these are this frame's readings.
+//   absent, in `known`          — nothing in it changed since the last frame
+//                                 sent to *this* client; the client's own
+//                                 copy still stands.
+//   absent, not in `known`      — the server cannot answer this section at
+//                                 all. It carries no readings, ever.
+//
+// A client that did not ask for deltas never sees the middle case: every
+// known section is present on every frame, and `full` is true. The grouping
+// is by *what changes together*, not by where LinuxCNC keeps it — the point
+// of a section is that a still machine sends none of them, and the reason
+// one bit per section is enough to say what moved.
+
+/// The state a machine is in, which is what most of a GUI is painted from.
+table TaskSection {
+  task_mode: TaskMode;
+  task_state: TaskState;
+  exec_state: ExecState;
+  interp_state: InterpState;
+  estop: bool;
+  enabled: bool;
+  paused: bool;
+  optional_stop: bool;
+  block_delete: bool;
+  queued_mdi_commands: int;
+  interpreter_errcode: int;
+}
+
+/// The program the machine has open and where it is in it. Separate from
+/// `TaskSection` because the line numbers move on every frame of a run
+/// while the modes and flags do not.
+table ProgramSection {
+  task_file: string;
+  task_command: string;
+  current_line: int;
+  motion_line: int;
+  read_line: int;
+  program_units: ProgramUnits;
+}
+
+/// The interpreter's modal state. Its own section because these three
+/// vectors are ~250 bytes that change only when a block sets something.
+table ModalSection {
+  /// Modal groups exactly as the interpreter reports them: 17 G slots,
+  /// values at ten times the code; 10 M slots, unscaled; -1 == nothing.
+  active_gcodes: [int];
+  active_mcodes: [int];
+  /// Interpreter settings: [sequence, feed rate, spindle speed, ...].
+  settings: [double];
+}
+
+/// Trajectory state and the overrides. Not the positions: those move on
+/// every frame of any motion and these mostly do not.
+table MotionSection {
+  traj_mode: TrajMode;
+  inpos: bool;
+  all_homed: bool;
+  velocity: double;
+  max_velocity: double;
+  distance_to_go: double;
+  motion_type: int;
+  feed_override: double;
+  rapid_override: double;
+  /// Motion's own flags, as it reports them.
+  feed_hold_active: bool;
+  adaptive_feed: bool;
+}
+
+/// Work-offset state, nine slots each in LinuxCNC's axis order.
+table Offsets {
+  /// 1 == G54 ... 9 == G59.3.
+  g5x_index: ubyte;
+  g5x: [double];
+  g92: [double];
+  tool: [double];
+}
+
+table IoSection {
+  tool_in_spindle: int;
+  pocket_prepped: int;
+  mist: bool;
+  flood: bool;
+}
+
+/// The ten sections of `Status`, one bit each. `Status.known` and
+/// `Status.changed` are both drawn on this, so the two answers about a
+/// section are the same shape and compose: `changed & Axes` is the whole
+/// test for "did the positions move", and `known & Hal` for "can this
+/// server answer HAL at all". One enum, so the identity of a section is
+/// declared once rather than once per question.
+enum StatusSection : uint (bit_flags) {
+  Task, Program, Modal, Motion, Axes, Spindles, Offsets, Eoffset, Io, Hal
+}
+
+/// The machine. Pushed at `ServerInfo.poll_ms`; whole, or in sections when
+/// the client asked for deltas.
+table Status {
+  /// Monotonic per connection, counting frames *built for this client*.
+  /// A tick the server suppressed because nothing changed does not advance
+  /// it, so an idle machine leaves no gap. A jump does mean frames were
+  /// dropped for you: the server shed queued frames because this connection
+  /// was not draining them, and the frame carrying the jump is `full` for
+  /// that reason. Reading the two together is the whole rule — a gap with
+  /// `full` set is a resynchronisation, and there is no other kind.
+  seq: uint;
+  /// Server monotonic clock, milliseconds, at the poll that produced this
+  /// frame. `uint` rather than `ulong`: it wraps every 49 days, every use is
+  /// a difference between two nearby values (correlating an event with the
+  /// frame it fell beside, measuring socket lag, spotting a stalled poll
+  /// clock), and a 64-bit field arrives in TS as a `bigint`.
+  t_ms: uint;
+  /// Every known section is present: take this frame as the whole truth and
+  /// discard what you held. Always true without `Hello.deltas`; with it,
+  /// true on the first frame after `Welcome` and whenever the server
+  /// resynchronises. A client needs no other rule to know it is in step.
+  full: bool;
+  /// Sections this server answers at all. A section outside it is absent
+  /// from every frame and carries no readings, ever. A property of the
+  /// server rather than of the frame, sent on every frame because four
+  /// bytes cost less than a rule about when it was last stated.
+  known: StatusSection;
+  /// Sections whose readings differ from the frame **before this one, on
+  /// this connection** — always masked to `known`, so a section the server
+  /// cannot answer never appears here.
+  ///
+  /// On a delta frame this says exactly what presence says, and it is worth
+  /// having anyway: it is one field to test instead of ten null checks, it
+  /// is `0` on a heartbeat (nothing moved, the server is alive), and both
+  /// are written from the *same* comparison in the server, so they cannot
+  /// come to disagree.
+  ///
+  /// On a **whole** frame it is the only thing that says it: every section
+  /// is present every time, so presence carries no information there. That
+  /// is what this field is for — a client can take whole frames, which need
+  /// no merging and no accumulated state, and still repaint only what
+  /// moved.
+  ///
+  /// On the first frame of a connection there is no frame before it, so
+  /// everything differs and this equals `known`.
+  ///
+  /// It is **section**-granular and deliberately not field-granular: the
+  /// sections are grouped by what moves together, so a bit per field would
+  /// be sixty-odd bits restating what ten already say, maintained by hand
+  /// against every field ever added.
+  changed: StatusSection;
+
+  task: TaskSection;
+  program: ProgramSection;
+  modal: ModalSection;
+  motion: MotionSection;
+  /// Indexed as `MachineInfo.axes`.
+  axes: [AxisStatus];
+  spindles: [SpindleStatus];
+  offsets: Offsets;
+  /// External offsets (eoffset) in force, per axis, machine units. Its own
+  /// section rather than a field of `Offsets`: while taper compensation is
+  /// active this moves every frame and the work offsets do not.
+  eoffset: [double];
+  io: IoSection;
+  /// Values of the pins named by the last `HalWatch`, in that order.
+  /// Sampled on the same poll as the rest of the frame.
+  watched: [HalValue];
+}

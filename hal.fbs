@@ -1,0 +1,87 @@
+include "common.fbs";
+
+namespace Lcfb;
+
+/// One object in the HAL inventory.
+table HalObject {
+  name: string;
+  kind: HalKind;
+  type: HalType;
+  direction: HalDirection;
+  /// For a pin: the signal it is linked to, or empty.
+  signal: string;
+  /// Whether this server may write it (its own component's output pins,
+  /// unlinked input pins, params).
+  writable: bool;
+}
+
+/// Query: the whole inventory, or the objects whose name starts with `prefix`.
+table HalInventoryQuery { prefix: string; }
+table HalInventory { objects: [HalObject]; }
+
+/// Query: read named objects now, outside the poll.
+table HalReadQuery { names: [string]; }
+table HalReadReply {
+  names: [string];
+  values: [HalValue];
+  /// Names that could not be read, with a reason each.
+  failed: [string];
+  reasons: [string];
+}
+
+table HalWriteItem {
+  name: string;
+  type: HalType;
+  value: HalValue;
+}
+
+/// Ordered writes, applied in this order on one thread, none skipped on a
+/// later failure: a client that needs A before B sends [A, B].
+table HalWrite {
+  id: uint;
+  items: [HalWriteItem];
+}
+
+table HalWriteAck {
+  id: uint;
+  /// Index of the first item that failed, or -1.
+  failed_at: int;
+  reason: string;
+}
+
+/// Set the pins carried in every `Status.watched`. The list
+/// **replaces** the whole watch set rather than adding to it: a client that
+/// sends its current set is idempotent, and there is no way for the two
+/// sides to drift apart about what is being watched. An empty list — or a
+/// null one — watches nothing.
+///
+/// This is the only way to watch a pin. `Hello` carries no watch list: what
+/// a client wants to see changes as the operator moves between screens, and
+/// a set fixed at connect would have to be the union of every screen's.
+///
+/// **A name with no `.` means the server's own component**: `spindle-at-speed`
+/// is `<ServerInfo.hal_component>.spindle-at-speed`. A name containing a `.` is
+/// taken literally, so `halui.machine.is-on` reaches another component's pin and
+/// a watch is not confined to what this server declared. Note the consequence
+/// for a declared name that itself contains a dot — `messages.lube-fault` is
+/// declared bare and must be *addressed* in full, as `foggy.messages.lube-fault`,
+/// because the server cannot tell that spelling from another component's.
+table HalWatch {
+  id: uint;
+  names: [string];
+}
+
+/// The set the server resolved, in the order `Status.watched` will carry
+/// them. `unknown` names were dropped and are **not** in `watching`, so a
+/// client that ignores this reply still reads the vector correctly by
+/// length; one that reads it can say which pin it asked for is not there.
+///
+/// `watching` echoes each name **as the client wrote it**, not as HAL spells
+/// it: a bare `spindle-at-speed` comes back bare. So a client keys its readings
+/// by what it asked for and needs nothing from `Welcome` to do so.
+table HalWatchAck {
+  id: uint;
+  watching: [string];
+  unknown: [string];
+  reasons: [string];
+}

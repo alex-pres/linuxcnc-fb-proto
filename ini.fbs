@@ -1,0 +1,19 @@
+namespace Lcfb;
+
+/// Read an INI value. Paths are resolved by the server (~, $VAR, relative
+/// against the INI's directory) when `as_path` is set, so the one path
+/// rule has one implementation.
+table IniGet {
+  id: uint;
+  section: string;
+  key: string;
+  as_path: bool;
+  /// Return every value for a repeated key, not just the first.
+  all: bool;
+}
+
+table IniValue {
+  id: uint;
+  found: bool;
+  values: [string];
+}

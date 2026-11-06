@@ -1,0 +1,86 @@
+include "common.fbs";
+
+namespace Lcfb;
+
+// One table per NML message the server can send. Names follow what the
+// operator means, not the message class.
+
+table Estop {}
+table EstopReset {}
+table MachineOn {}
+table MachineOff {}
+/// Abort: EMC_TASK_ABORT — motion, interpreter, and spindle.
+table Abort {}
+/// Abort plus a jog stop on every joint and axis. Atomic on the server;
+/// also what the server does when the connection drops.
+table StopAll {}
+
+table SetTaskMode { mode: TaskMode; }
+table SetTeleop { enable: bool; }
+
+table Home { joint: byte; }           // -1 == all
+table Unhome { joint: byte; }         // -1 == all
+table OverrideLimits { joint: byte; }
+
+table JogContinuous { target: JogTarget; index: ubyte; velocity: double; }
+table JogIncrement { target: JogTarget; index: ubyte; velocity: double; distance: double; }
+table JogStop { target: JogTarget; index: ubyte; }
+
+table SetFeedOverride { scale: double; }
+table SetRapidOverride { scale: double; }
+table SetSpindleOverride { spindle: ubyte; scale: double; }
+table SetMaxVelocity { velocity: double; }
+table SetFeedHold { on: bool; }
+table SetAdaptiveFeed { on: bool; }
+
+table SpindleForward { spindle: ubyte; speed: double; }
+table SpindleReverse { spindle: ubyte; speed: double; }
+table SpindleOff { spindle: ubyte; }
+table SpindleBrake { spindle: ubyte; engage: bool; }
+table SetMist { on: bool; }
+table SetFlood { on: bool; }
+
+/// One MDI line. Task queues it; completion is observed on `Status`.
+table Mdi { line: string; }
+table ProgramOpen { path: string; }
+table ProgramRun { line: int; }
+table ProgramPause {}
+table ProgramResume {}
+table ProgramStep {}
+table SetOptionalStop { on: bool; }
+table SetBlockDelete { on: bool; }
+table ResetInterpreter {}
+table LoadToolTable {}
+
+union CommandKind {
+  Estop, EstopReset, MachineOn, MachineOff, Abort, StopAll,
+  SetTaskMode, SetTeleop,
+  Home, Unhome, OverrideLimits,
+  JogContinuous, JogIncrement, JogStop,
+  SetFeedOverride, SetRapidOverride, SetSpindleOverride, SetMaxVelocity,
+  SetFeedHold, SetAdaptiveFeed,
+  SpindleForward, SpindleReverse, SpindleOff, SpindleBrake, SetMist, SetFlood,
+  Mdi, ProgramOpen, ProgramRun, ProgramPause, ProgramResume, ProgramStep,
+  SetOptionalStop, SetBlockDelete, ResetInterpreter, LoadToolTable
+}
+
+table Command {
+  /// Client-chosen, echoed in `Ack`.
+  id: uint;
+  kind: CommandKind;
+}
+
+enum AckResult : byte {
+  /// Task received the message. Not done: watch `Status`.
+  Received = 0,
+  /// The server declined to send it; `reason` says why.
+  Refused = 1,
+  /// Sent and the channel reported failure.
+  Failed = 2
+}
+
+table Ack {
+  id: uint;
+  result: AckResult;
+  reason: string;
+}

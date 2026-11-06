@@ -1,0 +1,198 @@
+include "common.fbs";
+
+namespace Lcfb;
+
+/// First frame from the client. Anything else before it is refused.
+table Hello {
+  schema_version: uint;
+  /// Free text naming the client, for the server's log.
+  client: string;
+  /// When this connection drops, the server sends `StopAll`. Defaults to
+  /// true so a GUI is safe by omission; a one-shot tool (a CLI issuing one
+  /// command and leaving) sets it false, or its own disconnect aborts what
+  /// it just started.
+  stop_on_disconnect: bool = true;
+  /// How often the client wants `Status`, in milliseconds. The server runs
+  /// **one** tick for every client, so this is an assertion rather than a
+  /// preference: the first client to state a number sets the tick, and a
+  /// later client stating a *different* one is refused by name in
+  /// `Welcome.refused`. Zero — the default — asserts nothing and accepts
+  /// whatever the server is running at, which is what a client with no
+  /// opinion should send. Below `MIN_POLL_MS` is refused.
+  poll_ms: ushort = 0;
+  /// Send `Status` as deltas: a section whose fields have not changed since
+  /// the last frame is omitted, and a frame with nothing changed at all is
+  /// not sent (a heartbeat keeps the link legible — `ServerInfo.heartbeat_ms`).
+  /// The first frame after `Welcome` always carries `Status.full`. Off by
+  /// default, so a client that does not opt in sees whole frames as before.
+  deltas: bool = false;
+  /// This connection watches and does not command. The server refuses every
+  /// machine action from it, by name, and answers everything that only reads.
+  ///
+  /// Added at the end of the table, so a client built before it says nothing
+  /// and a server built before it ignores it — in both directions the answer
+  /// is `false`, which is the behaviour that already existed.
+  ///
+  /// It is a **declaration, not a permission**: the connection is saying what
+  /// it is for, so the server can refuse the actions it has said it does not
+  /// take. It is not a security boundary — anything that can open the socket
+  /// can omit the flag — and it is not the read-only mode either, which is
+  /// `--read-only` and is about the whole server rather than one connection.
+  ///
+  /// What it refuses today is `HalWrite`, which is a machine action: an output
+  /// netted into spindle scaling or a motion permission changes what the
+  /// machine does. `HalWatch` and `HalReadQuery` are answered unchanged,
+  /// because reading is what an observer is for.
+  observe: bool = false;
+}
+
+/// The floor on `Hello.poll_ms`. A faster tick than this is refused: the
+/// server peeks NML and rebuilds every frame on one thread, and the point
+/// below which that stops keeping up is a property of the machine rather
+/// than of the client asking.
+enum Poll : ushort { MinMs = 10 }
+
+/// One axis the machine declares, in LinuxCNC's axis order.
+table AxisInfo {
+  letter: string;      // "X", "Y", "Z", "A", ...
+  index: ubyte;        // position in the 9-slot axis arrays
+  min_limit: double;
+  max_limit: double;
+  is_rotary: bool;
+  /// `[AXIS_<letter>] MAX_VELOCITY` / `MAX_ACCELERATION`, machine units.
+  /// Zero where the INI states none.
+  max_velocity: double;
+  max_acceleration: double;
+}
+
+/// One joint, in LinuxCNC's joint order. A joint is what homes and what a
+/// jog addresses before teleop; an axis is what a program commands.
+table JointInfo {
+  index: ubyte;
+  /// The axis this joint drives, e.g. "X". The server assumes joint *i*
+  /// drives the *i*-th declared axis (trivial kinematics) and states that
+  /// assumption here rather than leaving the client to make it. Empty when
+  /// there is no axis at that position.
+  axis_letter: string;
+  joint_type: JointType;
+  /// Machine units per this joint's unit, as motion reports it.
+  units: double;
+  min_limit: double;
+  max_limit: double;
+  /// `[JOINT_<n>] MAX_VELOCITY` / `MAX_ACCELERATION`. Zero where the INI
+  /// states none.
+  max_velocity: double;
+  max_acceleration: double;
+  /// `[JOINT_<n>] BACKLASH`, as motion reports it.
+  backlash: double;
+}
+
+/// One spindle. Velocities are rpm; overrides are scale factors where 1.0
+/// is 100 %.
+table SpindleInfo {
+  index: ubyte;
+  /// `[SPINDLE_<n>]` MIN/MAX_FORWARD_VELOCITY and MIN/MAX_REVERSE_VELOCITY
+  /// — what the machine says the spindle can do. Zero where unstated.
+  min_forward_velocity: double;
+  max_forward_velocity: double;
+  min_reverse_velocity: double;
+  max_reverse_velocity: double;
+  /// `[SPINDLE_<n>] INCREMENT`, the step a speed control should take.
+  increment: double;
+  /// `[DISPLAY] MIN_SPINDLE_<n>_OVERRIDE` / `MAX_SPINDLE_<n>_OVERRIDE`,
+  /// falling back to the unindexed `MIN_SPINDLE_OVERRIDE` /
+  /// `MAX_SPINDLE_OVERRIDE`. The bounds an override control needs.
+  min_override: double;
+  max_override: double;
+  /// `[DISPLAY] MIN_SPINDLE_<n>_SPEED` / `MAX_SPINDLE_<n>_SPEED` /
+  /// `DEFAULT_SPINDLE_<n>_SPEED` — what a GUI seeds and clamps an S-word
+  /// entry with, which is not the same question as what the spindle can do.
+  min_speed: double;
+  max_speed: double;
+  default_speed: double;
+  /// `[SPINDLE_<n>] HOME_SEARCH_VELOCITY`; `can_home` is that being non-zero.
+  home_search_velocity: double;
+  can_home: bool;
+  /// Whether `M19` will do anything. Not an INI fact — orientation works
+  /// only when `spindle.<n>.orient-*` is wired — so the server answers it
+  /// from HAL and reports **false** until it has a component to ask.
+  can_orient: bool;
+}
+
+/// What the machine is. Read once at connect; changes only with a restart.
+table MachineInfo {
+  axes: [AxisInfo];
+  joints: [JointInfo];
+  spindles: [SpindleInfo];
+  is_lathe: bool;
+  /// Machine units per mm (1.0 == mm, 1/25.4 == inch).
+  linear_units: double;
+  angular_units: double;
+  max_linear_velocity: double;
+  max_angular_velocity: double;
+  min_feed_override: double;
+  max_feed_override: double;
+  random_tool_changer: bool;
+  ini_path: string;
+  /// [DISPLAY] PROGRAM_PREFIX, resolved.
+  program_prefix: string;
+}
+
+/// What this server instance offers. A client reads it rather than assuming.
+table ServerInfo {
+  version: string;
+  /// HAL component name, e.g. "foggy". Empty when the server exports none.
+  hal_component: string;
+  /// The server owns the NML command channel (false: status only).
+  can_command: bool;
+  has_preview: bool;
+  has_tool_table: bool;
+  /// The tick the server is actually running at, in milliseconds — what
+  /// `Hello.poll_ms` was granted, or what an earlier client set, or the
+  /// command line. `Status` arrives at this rate.
+  poll_ms: ushort;
+  /// With `Hello.deltas` on, the longest the server will go without a
+  /// frame: after this many milliseconds of nothing changing it sends a
+  /// `Status` carrying no section, so a stalled server and a still machine
+  /// are told apart. Zero when the client did not ask for deltas.
+  heartbeat_ms: ushort;
+  /// The server can render any frame as JSON for a person to read; see
+  /// `--debug-json`. Stated so a client can say the tool exists.
+  has_debug_json: bool;
+  /// The server answers `fs.fbs` — `DirRead`, `FileRead`, `FileUpload`,
+  /// `FileDelete`, `DirChange`. True for an ordinary machine, which needs
+  /// no declaration: the default root is the machine ini's own directory.
+  /// False only where there is no such directory to default to (`--nml`)
+  /// and nothing was declared. Appended to the table, so a client built
+  /// before it reads false and a server built before it says nothing.
+  has_files: bool = false;
+  /// The directories the file frames answer for, resolved, each serving
+  /// itself and everything beneath it, in the order they were declared. A
+  /// path outside every one of them is refused before it is opened. Empty
+  /// means `has_files` is false.
+  ///
+  /// Fixed for the life of the server, which is what makes reading this
+  /// once at connect correct. A root that is later unmounted stays in the
+  /// list and fails its listing instead — no frame carries a field in which
+  /// to say the set moved.
+  ///
+  /// Paths only. What a root is *called* on a chooser is its label, and it
+  /// arrives as `DirEntry.name` in the roots listing (`DirRead` with an
+  /// empty path), so a client renders the chooser from one answer rather
+  /// than joining two.
+  file_roots: [string];
+  /// The most bytes one `FileRead` returns and the most one `FileUpload`
+  /// accepts. A read asking for more is clamped and says so
+  /// (`FileReadValue.truncated`); an upload larger than this is refused by
+  /// name. Declared as `[FILES]MAX_BYTES` and 16 MiB by default; zero
+  /// when `has_files` is false.
+  max_file_bytes: uint = 0;
+}
+
+table Welcome {
+  /// Non-empty means the connection is refused, and why.
+  refused: string;
+  schema_version: uint;
+  machine: MachineInfo;
+  server: ServerInfo;
+}

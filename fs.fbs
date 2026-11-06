@@ -1,0 +1,255 @@
+// Files, as the machine's host sees them: list a directory, read a file,
+// write one, delete one, and make or unmake a directory.
+//
+// **Why this exists at all.** `openspec/changes/program-run/design.md`
+// rejected file frames — the client and `lcnc-flatserver` run on one host on
+// the panel, so the browser can read the filesystem directly and
+// `ProgramOpen` hands task a path it can open. That is still true of the
+// panel and is still the deployment. It is *not* true of a client on any
+// other host, where the browser lists the wrong filesystem and every
+// `ProgramOpen` fails at the machine, and it is not true of a program that
+// arrives on a stick plugged into the panel while the interface runs
+// somewhere else. These frames make the browser correct from anywhere.
+//
+// The rejection named four hazards, and each is answered here rather than
+// left to an implementation: **path escapes** by `roots` (below),
+// **symlinks** by every path being answered resolved and by `DirEntry`
+// carrying `resolved` beside `path`, **large files** by
+// `ServerInfo.max_file_bytes` and by geometry still travelling as a bulk
+// file, **partial reads** by `FileRead.offset` / `max_bytes` and
+// `FileReadValue.truncated`.
+//
+// **The server serves paths; it does not decide what an operator may see.**
+// The exclusion set, the hidden-name rule, and the confinement of writes to
+// the program tree are the client's — `foggy-ui/packages/machine`'s
+// `program/browse.ts`, where they are pure and tested — for the same reason
+// every other guard is the client's. What the server enforces is the one
+// thing a client cannot: that a path it is asked for is under a root the
+// machine declared. Those are two different rules and neither is a copy of
+// the other.
+//
+// **Roots.** The server answers only for paths under
+// `ServerInfo.file_roots`, resolved, compared component by component. A
+// path outside them is refused by name, before it is opened, and refused
+// identically whether the connection came over the Unix socket or over
+// `--tcp`, which widens nothing.
+//
+// **The default root is the machine ini's own directory**, and it needs no
+// configuration: the server is already in that directory when it reads
+// this, so the safe answer is the one a machine gets by saying nothing.
+// A `[FILES]ROOT` line in `lcnc-flatserver.ini` — the same document the
+// HAL pins are declared in — **replaces** that default rather than adding
+// to it, so a machine that names its roots gets exactly those. Only a
+// session with no machine ini to default to (`--nml`) and no declaration
+// serves nothing, answering `has_files = false` and refusing all five.
+//
+// **An observing connection reads and does not write.** `Hello.observe`
+// says the connection watches, so `DirChange`, `FileUpload` and
+// `FileDelete` are refused by name from it, and `DirRead` and `FileRead`
+// are answered unchanged. It is the rule `HalWrite` already follows.
+//
+// **Every reply carries `error`, and non-empty means it failed** — the
+// shape `PreviewResult` uses. There is no separate result enum: a
+// filesystem call either did the thing or has a sentence saying why not,
+// and the distinction `Ack` draws between *received* and *done* does not
+// arise, because these frames are answered when the work is finished.
+// `path` on a reply is what the server resolved, so a client can see what
+// it actually touched.
+
+include "common.fbs";
+
+namespace Lcfb;
+
+/// One entry in a listing.
+///
+/// `resolved` is `path` with every symbolic link followed, and it is a
+/// separate field rather than a replacement because the browser needs both:
+/// it shows and navigates `path`, and it matches its exclusion set against
+/// `resolved`, so a link into an excluded tree is excluded by the same rule
+/// and there is no second rule for links. Where the entry cannot be
+/// resolved — a broken link — `resolved` is empty and `is_link` is true.
+///
+/// `size` and `mtime_ns` are of the entry itself, after resolution, on the
+/// same clock and in the same units as `PreviewResult`, so a client can tell
+/// a stale preview from a fresh one without a second stat.
+table DirEntry {
+  name: string;
+  path: string;
+  resolved: string;
+  is_dir: bool;
+  is_link: bool;
+  size: ulong;
+  mtime_ns: ulong;
+}
+
+/// List a directory.
+///
+/// **An empty `path` asks for the roots**, which is how a client reaches
+/// the top of what is served without knowing where that is. Where more
+/// than one root is configured the reply is one entry per root, named by
+/// its label; where there is exactly **one** it is that root's contents
+/// instead, because a chooser holding one row costs a keypress on a
+/// five-key panel and tells the operator nothing.
+/// `DirReadValue.path` tells the two apart — see there.
+///
+/// It carries no filter — no glob, no hidden-name flag, no sort. What is
+/// hidden from an operator is the client's rule and it changes with the
+/// screen; a filter here would be a second copy of it, in the process least
+/// able to test it. The server returns every name `readdir` gave it and the
+/// client shows what it means to show.
+table DirRead {
+  id: uint;
+  path: string;
+}
+
+/// The listing. Entries are in `readdir` order — sorting is display, and
+/// display is the client's.
+///
+/// An entry that could not be stat'ed is **omitted and counted**, never
+/// fatal: one racing removal or one broken mount must not take away a
+/// directory that is otherwise fine, and a client that wants to say
+/// *something is here I cannot show you* has the count to say it with.
+/// The directory itself failing is an `error`, because there is then
+/// nothing to show.
+table DirReadValue {
+  id: uint;
+  /// Non-empty means the listing failed, and why; nothing else is meaningful.
+  error: string;
+  /// The directory as the server resolved it — and **empty** when these
+  /// entries are the roots themselves, which is the whole of how a client
+  /// tells a roots listing from a directory's contents. A single-root
+  /// server answering an empty `DirRead.path` sets it to that root, so the
+  /// two answers to the same question stay distinguishable.
+  path: string;
+  entries: [DirEntry];
+  /// How many names were returned by the kernel and left out of `entries`.
+  omitted: uint;
+}
+
+/// What a `DirChange` does. One message rather than three, because the
+/// three share every field but one and one refusal path.
+enum DirChangeKind : byte {
+  /// `mkdir`. Fails when something is already at `path`.
+  Create = 0,
+  /// `rmdir`, and only that: an **empty** directory. Never recursive —
+  /// a recursive delete over a socket is one typo away from the machine's
+  /// configuration, and no screen has ever asked for one.
+  Remove = 1,
+  /// `rename`, which is atomic but only within one filesystem: a rename
+  /// from a stick to the program tree is refused by name rather than
+  /// silently copied, because the caller asked for a rename.
+  Rename = 2
+}
+
+table DirChange {
+  id: uint;
+  kind: DirChangeKind;
+  path: string;
+  /// `Rename` only: the new path. Under a root like every other path.
+  to: string;
+  /// `Create` only: create missing parents (`mkdir -p`). Off by default,
+  /// so a mistyped path is an error rather than a new tree.
+  parents: bool = false;
+}
+
+table DirChangeAck {
+  id: uint;
+  error: string;
+  /// The directory the change left behind, resolved — the one created, or
+  /// the new name after a rename. Empty after a `Remove`.
+  path: string;
+}
+
+/// Read a file.
+///
+/// `offset` and `max_bytes` exist so a client can look at the head of a
+/// program it has no intention of loading, and so a file larger than the
+/// server's cap can be read at all. Zero `max_bytes` means the cap,
+/// `ServerInfo.max_file_bytes`; a larger value is clamped to it rather than
+/// refused, and `truncated` then says so. An `offset` past the end is not
+/// an error: it reads nothing.
+table FileRead {
+  id: uint;
+  path: string;
+  offset: ulong = 0;
+  max_bytes: uint = 0;
+}
+
+/// The bytes, and the identity of what they were read from.
+///
+/// `content` is bytes rather than a string: a G-code file is text by
+/// convention and not by guarantee, and a decoder in the client can fail
+/// loudly where a decoder here would have to guess silently.
+///
+/// `size` and `mtime_ns` are the **whole file's**, sampled at the read, so
+/// a partial read still tells the client what it is looking into and a
+/// later write can notice the file moved underneath it.
+table FileReadValue {
+  id: uint;
+  error: string;
+  /// The file as the server resolved it.
+  path: string;
+  content: [ubyte];
+  size: ulong;
+  mtime_ns: ulong;
+  /// There are bytes after `offset + content.length`.
+  truncated: bool;
+}
+
+/// Write a file whole, replacing whatever was there.
+///
+/// **The write is atomic**: the server writes a temporary in the
+/// destination's own directory and renames it, so an interrupted upload
+/// leaves the previous file intact. The temporary is in that directory and
+/// not in `/tmp` because `rename` is atomic only within a filesystem. This
+/// is the rule the client already follows for its own files
+/// (`program_files.ts`), stated here because it now happens in two places.
+///
+/// There is no chunking and no resume. A program is bounded — it is a file
+/// a person wrote — and `ServerInfo.max_file_bytes` says by how much; a
+/// larger upload is refused by name and stays refused. Bulk that is not
+/// bounded, which is preview geometry, still never crosses the stream: it
+/// is a file the client is told the name of.
+table FileUpload {
+  id: uint;
+  path: string;
+  content: [ubyte];
+  /// Refuse when anything is already at `path`, rather than replacing it.
+  /// The overwrite confirmation is the client's — this is what makes the
+  /// answer it got still true at the write.
+  create_only: bool = false;
+  /// Create missing parent directories. Off by default, for `DirChange`'s
+  /// reason.
+  parents: bool = false;
+}
+
+table FileUploadAck {
+  id: uint;
+  error: string;
+  /// The file as the server resolved it, after the rename.
+  path: string;
+  size: ulong;
+  mtime_ns: ulong;
+  /// A file was there and has been replaced. False with `create_only`.
+  replaced: bool;
+}
+
+/// Delete one file. Not a directory — that is `DirChange.Remove` — and
+/// never a tree.
+table FileDelete {
+  id: uint;
+  path: string;
+  /// Succeed when there was nothing there. A client removing a scratch
+  /// file it may never have written sets it; one deleting what the
+  /// operator pointed at does not, and hears that it was already gone.
+  missing_ok: bool = false;
+}
+
+table FileDeleteAck {
+  id: uint;
+  error: string;
+  /// The file as the server resolved it, before the unlink.
+  path: string;
+  /// It was there and is gone. False when `missing_ok` covered an absence.
+  existed: bool;
+}

@@ -1,0 +1,35 @@
+include "common.fbs";
+
+namespace Lcfb;
+
+/// One message from the error channel. Queued and delivered in order.
+table OperatorMessage {
+  kind: MessageKind;
+  text: string;
+  /// True when the source was NML rather than the operator channel.
+  is_nml: bool;
+  /// Server monotonic clock, milliseconds; same clock and same `uint`
+  /// reasoning as `Status.t_ms`, so a message can be placed between the
+  /// two frames it arrived among.
+  t_ms: uint;
+}
+
+/// A raw input event from a device the server has opened (evdev shape).
+/// What a code means belongs to the client or a device-specific schema.
+table InputEvent {
+  device: string;    // as named in the server's configuration
+  type: ushort;      // EV_KEY, EV_ABS, ...
+  code: ushort;
+  value: int;
+  /// Server monotonic clock, milliseconds, when the kernel reported the
+  /// event — not when it was forwarded. Same clock and `uint` reasoning as
+  /// `Status.t_ms`; press-to-release and event-to-frame are differences.
+  t_ms: uint;
+}
+
+/// The server is going away, or lost the machine.
+table ServerNotice {
+  text: string;
+  /// The NML channels are gone; `Status` will stop.
+  machine_lost: bool;
+}

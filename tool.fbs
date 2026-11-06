@@ -1,0 +1,37 @@
+include "common.fbs";
+
+namespace Lcfb;
+
+/// One tool-table row as LinuxCNC holds it. Offsets in machine units.
+table ToolRow {
+  number: int;
+  pocket: int;
+  x_offset: double;
+  y_offset: double;
+  z_offset: double;
+  a_offset: double;
+  b_offset: double;
+  c_offset: double;
+  u_offset: double;
+  v_offset: double;
+  w_offset: double;
+  diameter: double;
+  frontangle: double;
+  backangle: double;
+  orientation: int;
+  /// At most 39 characters; the server refuses longer by name.
+  comment: string;
+}
+
+table ToolTableQuery {}
+table ToolTable {
+  rows: [ToolRow];
+  /// The file or database the rows came from, for the client's record.
+  source: string;
+}
+
+/// Replace one row and reload. One write, one reload, one refusal path.
+table ToolSet {
+  id: uint;
+  row: ToolRow;
+}

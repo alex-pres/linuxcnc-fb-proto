@@ -1,0 +1,53 @@
+include "common.fbs";
+
+namespace Lcfb;
+
+/// Parse a program into the bulk preview file. The server derives the
+/// init codes from the machine's current state unless overridden.
+table PreviewLoad {
+  id: uint;
+  path: string;
+  /// Optional G-code lines run before the file (units, offsets, modal
+  /// groups). Empty means "as the machine is now".
+  init_codes: [string];
+  /// A previous result's id; the server may answer from cache when the
+  /// file is unchanged.
+  previous: uint;
+}
+
+table PreviewSegmentCounts {
+  vertices: uint;
+  moves: uint;
+  planes: ubyte;
+}
+
+/// Summary of a parse. The geometry is in `file`, not here.
+table PreviewResult {
+  id: uint;
+  /// Non-empty means the parse failed, and why.
+  error: string;
+  /// Path to the bulk file. The client owns reading it; the server deletes
+  /// it on the next load with the same id slot or at exit.
+  file: string;
+  /// Identity of what was parsed, so a client can tell staleness.
+  path: string;
+  mtime_ns: ulong;
+  size: ulong;
+  counts: PreviewSegmentCounts;
+  /// [xmin, ymin, zmin, xmax, ymax, zmax], machine units.
+  extents: [double];
+  drawn_extents: [double];
+  rapid_length: double;
+  cut_length: double;
+  dwell_time: double;
+  /// Tool numbers used, in order of first use.
+  tools: [int];
+}
+
+// Layout of the bulk file, version 1 (documented here, not a FlatBuffer):
+//   header  : "LCPV" u8 version u32 n_vertices u8 n_planes  (pad to 16)
+//   per plane: float32 xyz * n_vertices                        (12 B each)
+//   attrs   : uint32 (line) uint32 (kind | tool << 8) * n_vertices
+//   kinds   : 0 rapid, 1 feed, 2 arc, 3 dwell marker, 4 tool change marker
+// Everything little-endian, each section 16-byte aligned, so a client maps
+// the file and builds typed-array views without copying.
